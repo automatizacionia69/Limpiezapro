@@ -14,6 +14,12 @@ import {
 } from "@/lib/whatsapp/enviar";
 import { yaProcesado } from "@/lib/whatsapp/dedupe";
 import { agregarItem, obtenerCarrito, vaciarCarrito } from "@/lib/whatsapp/carrito";
+import { guardarUltimaBusqueda, obtenerUltimaBusqueda } from "@/lib/whatsapp/ultimaBusqueda";
+import {
+  pedirCantidadPara,
+  verProductoPendienteDeCantidad,
+  limpiarPendienteDeCantidad,
+} from "@/lib/whatsapp/estado";
 import { generarProforma } from "@/lib/whatsapp/proforma";
 import {
   respuestaConsultaStock,
@@ -153,6 +159,12 @@ async function procesarMensaje(
     return;
   }
 
+  const productoPendiente = verProductoPendienteDeCantidad(remitente);
+  if (productoPendiente !== null) {
+    await procesarRespuestaCantidad(remitente, productoPendiente, texto);
+    return;
+  }
+
   const resultado = detectarIntencion(texto);
   console.log(
     `Intencion detectada (de ${enmascarar(remitente)}):`,
@@ -180,6 +192,7 @@ async function procesarMensaje(
     return;
   }
 
+  guardarUltimaBusqueda(remitente, productos);
   await enviarListaProductos(remitente, productos);
 }
 
@@ -188,14 +201,14 @@ const MAX_FILAS_POR_LISTA = 10;
 
 async function enviarListaProductos(
   destinatario: string,
-  productos: ProductoEncontrado[]
+  productos: ProductoEncontrado[],
+  introduccion = "Esto encontré"
 ) {
   const filas = productos.map((p) => ({
     id: `add_${p.id}`,
     titulo: p.nombre,
-    descripcion: `${
-      p.precio_venta !== null ? `S/ ${p.precio_venta.toFixed(2)}` : "Consultar precio"
-    } · ${p.cantidad > 0 ? `${p.cantidad} ${p.unidad}` : "sin stock"}`,
+    descripcion:
+      p.precio_venta !== null ? `S/ ${p.precio_venta.toFixed(2)}` : "Consultar precio",
   }));
 
   const lotes: (typeof filas)[] = [];
@@ -208,8 +221,8 @@ async function enviarListaProductos(
   for (let i = 0; i < lotes.length; i++) {
     const cuerpo =
       lotes.length > 1
-        ? `Esto encontré (${i + 1}/${lotes.length}). Tocá un producto para agregarlo a tu pedido:`
-        : "Esto encontré. Tocá un producto para agregarlo a tu pedido:";
+        ? `${introduccion} (${i + 1}/${lotes.length}). Tocá un producto para agregarlo a tu pedido:`
+        : `${introduccion}. Tocá un producto para agregarlo a tu pedido:`;
 
     const enviado = await enviarListaInteractiva(destinatario, cuerpo, "Ver productos", [
       { titulo: "Resultados", filas: lotes[i] },
@@ -246,7 +259,7 @@ async function procesarInteractivo(
     if (typeof id === "string" && id.startsWith("add_")) {
       const productoId = Number(id.slice("add_".length));
       if (Number.isFinite(productoId)) {
-        await agregarProductoAlCarrito(remitente, productoId);
+        await pedirCantidad(remitente, productoId);
       }
     }
     return;
@@ -287,14 +300,67 @@ async function procesarInteractivo(
   }
 }
 
-async function agregarProductoAlCarrito(remitente: string, productoId: number) {
+/** Tope de cantidad por unico item: no limita la venta por stock, solo evita numeros absurdos/overflow. */
+const CANTIDAD_MAXIMA_POR_ITEM = 100_000;
+
+/** Tras tocar un producto en la lista, se pregunta la cantidad por texto libre — sin mostrar ni limitar por stock. */
+async function pedirCantidad(remitente: string, productoId: number) {
   const producto = await obtenerProductoPorId(productoId);
   if (!producto) {
     await enviarTexto(remitente, "Ese producto ya no está disponible.");
     return;
   }
 
-  const item = agregarItem(remitente, producto);
+  pedirCantidadPara(remitente, productoId);
+  await enviarTexto(
+    remitente,
+    `¿Cuántas unidades de "${producto.nombre}" querés? Escribí el número.`
+  );
+}
+
+async function procesarRespuestaCantidad(
+  remitente: string,
+  productoId: number,
+  texto: string
+) {
+  const match = texto.trim().match(/^\d+$/);
+  const cantidad = match ? Number.parseInt(match[0], 10) : NaN;
+
+  if (
+    !Number.isSafeInteger(cantidad) ||
+    cantidad <= 0 ||
+    cantidad > CANTIDAD_MAXIMA_POR_ITEM
+  ) {
+    await enviarTexto(remitente, "Escribí solo el número de unidades, por ejemplo: 3");
+    return; // se mantiene pendiente para reintentar
+  }
+
+  limpiarPendienteDeCantidad(remitente);
+  await agregarProductoAlCarrito(remitente, productoId, cantidad);
+}
+
+async function agregarProductoAlCarrito(
+  remitente: string,
+  productoId: number,
+  cantidad: number
+) {
+  const producto = await obtenerProductoPorId(productoId);
+  if (!producto) {
+    await enviarTexto(remitente, "Ese producto ya no está disponible.");
+    return;
+  }
+
+  const item = agregarItem(remitente, producto, cantidad);
   await enviarTexto(remitente, respuestaItemAgregado(item));
+
+  // WhatsApp solo permite tocar UNA fila por mensaje de lista: se reenvia el
+  // mismo listado de la ultima busqueda para que el cliente pueda seguir
+  // agregando (ej. varias bolsas distintas) sin tener que reescribir la
+  // busqueda de nuevo.
+  const ultimaBusqueda = obtenerUltimaBusqueda(remitente);
+  if (ultimaBusqueda && ultimaBusqueda.length > 0) {
+    await enviarListaProductos(remitente, ultimaBusqueda, "¿Algo más de esta lista?");
+  }
+
   await enviarBotonesAccion(remitente);
 }

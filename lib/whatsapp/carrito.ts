@@ -27,7 +27,8 @@ function limpiarExpirados() {
 
 export function agregarItem(
   telefono: string,
-  producto: { id: number; nombre: string; precio_venta: number | null }
+  producto: { id: number; nombre: string; precio_venta: number | null },
+  cantidad = 1
 ): ItemCarrito {
   limpiarExpirados();
 
@@ -41,14 +42,14 @@ export function agregarItem(
 
   const existente = registro.items.find((i) => i.productoId === producto.id);
   if (existente) {
-    existente.cantidad += 1;
+    existente.cantidad += cantidad;
     return existente;
   }
 
   const nuevo: ItemCarrito = {
     productoId: producto.id,
     nombre: producto.nombre,
-    cantidad: 1,
+    cantidad,
     precioUnitario: producto.precio_venta ?? 0,
   };
   registro.items.push(nuevo);

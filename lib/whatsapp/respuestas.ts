@@ -7,8 +7,7 @@ function formatearPrecio(precio: number | null): string {
 }
 
 function lineaProducto(p: ProductoEncontrado): string {
-  const stock = p.cantidad > 0 ? `${p.cantidad} ${p.unidad}` : "sin stock";
-  return `• *${p.nombre}* — ${formatearPrecio(p.precio_venta)} — ${stock}`;
+  return `• *${p.nombre}* — ${formatearPrecio(p.precio_venta)}`;
 }
 
 export function respuestaConsultaStock(productos: ProductoEncontrado[]): string {
