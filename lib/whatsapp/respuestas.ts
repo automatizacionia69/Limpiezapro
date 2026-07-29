@@ -31,6 +31,9 @@ export function respuestaArmarPedido(productos: ProductoEncontrado[]): string {
 export const RESPUESTA_DESCONOCIDO =
   "No entendí tu mensaje. Podés preguntarme por el precio o stock de un producto, por ejemplo: \"cuánto cuesta la lejía\".";
 
+export const RESPUESTA_FUERA_DE_CATALOGO =
+  "Por ahora solo puedo ayudarte con productos del catálogo. Si necesitás otra cosa, un vendedor te va a escribir en breve.";
+
 export const RESPUESTA_TIPO_NO_SOPORTADO =
   "Por ahora solo puedo leer mensajes de texto. Escribime el nombre del producto que buscás, por ejemplo: \"tienen papel higiénico\".";
 

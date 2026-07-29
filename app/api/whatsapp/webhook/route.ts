@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { detectarIntencion } from "@/lib/whatsapp/intent";
 import {
   buscarProductos,
+  buscarProductosPorTerminos,
   obtenerProductoPorId,
   type ProductoEncontrado,
 } from "@/lib/whatsapp/productos";
@@ -21,9 +22,12 @@ import {
   limpiarPendienteDeCantidad,
 } from "@/lib/whatsapp/estado";
 import { generarProforma } from "@/lib/whatsapp/proforma";
+import { interpretarConGemini } from "@/lib/whatsapp/gemini";
+import { agregarTurno, obtenerHistorial } from "@/lib/whatsapp/memoriaConversacion";
 import {
   respuestaConsultaStock,
   RESPUESTA_DESCONOCIDO,
+  RESPUESTA_FUERA_DE_CATALOGO,
   RESPUESTA_TIPO_NO_SOPORTADO,
   RESPUESTA_CARRITO_VACIO,
   respuestaCarrito,
@@ -177,7 +181,7 @@ async function procesarMensaje(
     resultado.productoTexto;
 
   if (!requiereBusqueda) {
-    await enviarTexto(remitente, RESPUESTA_DESCONOCIDO);
+    await resolverConGemini(remitente, texto);
     return;
   }
 
@@ -192,6 +196,49 @@ async function procesarMensaje(
     return;
   }
 
+  guardarUltimaBusqueda(remitente, productos);
+  await enviarListaProductos(remitente, productos);
+}
+
+/**
+ * Respaldo cuando las reglas de intent.ts no entendieron el mensaje: se
+ * intenta con Gemini (interpretarConGemini ya maneja circuit breaker,
+ * timeout y cualquier falla — nunca lanza). Si tampoco resuelve nada, se
+ * cae en la misma RESPUESTA_DESCONOCIDO de siempre.
+ */
+async function resolverConGemini(remitente: string, texto: string) {
+  agregarTurno(remitente, "usuario", texto);
+
+  const interpretacion = await interpretarConGemini(texto, obtenerHistorial(remitente));
+
+  if (interpretacion?.intent === "fuera_de_catalogo") {
+    agregarTurno(remitente, "bot", RESPUESTA_FUERA_DE_CATALOGO);
+    await enviarTexto(remitente, RESPUESTA_FUERA_DE_CATALOGO);
+    return;
+  }
+
+  if (!interpretacion || interpretacion.intent === "desconocido" || interpretacion.items.length === 0) {
+    agregarTurno(remitente, "bot", RESPUESTA_DESCONOCIDO);
+    await enviarTexto(remitente, RESPUESTA_DESCONOCIDO);
+    return;
+  }
+
+  const productos = await buscarProductosPorTerminos(
+    interpretacion.items.map((item) => item.textoBusqueda)
+  );
+  console.log(
+    `[Gemini] Productos encontrados para "${texto}": ${productos.length}`
+  );
+  if (esDesarrollo) console.log(productos);
+
+  if (productos.length === 0) {
+    const respuesta = respuestaConsultaStock(productos);
+    agregarTurno(remitente, "bot", respuesta);
+    await enviarTexto(remitente, respuesta);
+    return;
+  }
+
+  agregarTurno(remitente, "bot", `Mostré: ${productos.map((p) => p.nombre).join(", ")}`);
   guardarUltimaBusqueda(remitente, productos);
   await enviarListaProductos(remitente, productos);
 }

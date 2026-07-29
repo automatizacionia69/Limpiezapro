@@ -380,6 +380,51 @@ Para la pieza 8 faltan las tablas `pedidos` / `pedido_items` — con la regla de
 `CLAUDE.md`: un pedido **no descuenta stock**; el movimiento de salida se genera
 recién cuando pasa a `despachado`.
 
+### 6.3 Gemini como respaldo híbrido (2026-07-29)
+
+Las reglas de `intent.ts` solo entienden **un producto por mensaje** y
+fallan con typos, frases informales o mensajes compuestos ("quiero papel y
+también lejía"). Se agregó Gemini como **respaldo**, no como reemplazo: las
+reglas siguen siendo el camino rápido y principal; Gemini solo entra cuando
+`detectarIntencion` no resuelve nada, y si Gemini falla o tarda, el cliente
+igual recibe la respuesta de siempre. Gemini nunca inventa precio/stock: solo
+interpreta el mensaje y entrega frases de búsqueda, el dato real sigue
+saliendo de `buscarProductos()` contra Supabase.
+
+Se agregó:
+- `lib/whatsapp/gemini.ts` — cliente REST directo a la API de Gemini (fetch,
+  sin SDK nuevo), modelo `gemini-2.5-flash` por defecto (configurable con
+  `GEMINI_MODEL`). Pide salida JSON estructurada (`responseSchema`), con
+  timeout de 3.5s (`AbortController`) y validación manual de la respuesta.
+  Nunca lanza excepción — cualquier falla (falta la key, timeout, HTTP no-ok,
+  JSON no conforme) devuelve `null`.
+- `lib/whatsapp/circuitoIA.ts` — circuit breaker a nivel de módulo: 3 fallas
+  seguidas abren el circuito 60s (sin llamar a Gemini durante ese tiempo). Al
+  abrirse por primera vez, manda un WhatsApp a `WHATSAPP_ADMIN_NUMERO` (si
+  está configurada) avisando del problema — distingue error de autenticación
+  (401/403, típico de clave vencida o nunca configurada) de un error
+  genérico/timeout.
+- `lib/whatsapp/memoriaConversacion.ts` — historial corto por teléfono
+  (últimos 8 turnos, TTL 30 min, mismo patrón Map que `carrito.ts`), para que
+  Gemini resuelva referencias como "la de 4 litros" sin tabla nueva.
+- `RESPUESTA_FUERA_DE_CATALOGO` en `respuestas.ts` — para saludos/preguntas
+  fuera del catálogo, más amable que el "no entendí" genérico.
+- `buscarProductosPorTerminos()` en `productos.ts` — busca un producto por
+  cada item que interpretó Gemini y combina resultados deduplicando por id.
+- `route.ts` — el bloque que antes mandaba `RESPUESTA_DESCONOCIDO` directo
+  cuando las reglas no resolvían nada ahora llama a `interpretarConGemini`
+  primero (`resolverConGemini`), y solo cae en la respuesta genérica si
+  Gemini tampoco resuelve nada.
+
+**Pendiente de esta pieza:**
+- Falta correr el flujo real con `GEMINI_API_KEY` y `WHATSAPP_ACCESS_TOKEN`
+  reales — solo se verificó `lint`/`tsc --noEmit` en el sandbox de esta
+  sesión, sin webhook real de Meta.
+- Probar los 6 casos manuales documentados en el plan de esta pieza:
+  mensaje que las reglas ya entienden, typo/frase sin gatillo, mensaje
+  compuesto (2 productos), fuera de catálogo, clave inválida a propósito
+  (circuito + aviso al dueño), y memoria de referencia ("la de 4 litros").
+
 ---
 
 ## 7. ⚠️ PENDIENTES QUE REQUIEREN ACCIÓN MANUAL

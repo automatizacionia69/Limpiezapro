@@ -133,6 +133,26 @@ export async function buscarProductos(
     .map((r) => r.producto);
 }
 
+/**
+ * Busca varios terminos (uno por producto interpretado por Gemini) y combina
+ * los resultados deduplicando por id — un mismo producto puede matchear mas
+ * de un termino. Se recorta al mismo tope que una busqueda individual.
+ */
+export async function buscarProductosPorTerminos(
+  textos: string[]
+): Promise<ProductoEncontrado[]> {
+  const resultadosPorTermino = await Promise.all(textos.map(buscarProductos));
+
+  const vistos = new Map<number, ProductoEncontrado>();
+  for (const resultados of resultadosPorTermino) {
+    for (const producto of resultados) {
+      if (!vistos.has(producto.id)) vistos.set(producto.id, producto);
+    }
+  }
+
+  return [...vistos.values()].slice(0, MAX_RESULTADOS);
+}
+
 /** Trae un producto puntual (precio/stock al momento de la seleccion en la lista interactiva). */
 export async function obtenerProductoPorId(
   id: number
