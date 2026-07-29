@@ -9,6 +9,8 @@ export interface IntentResult {
 const PALABRAS_CONSULTA = [
   "cuanto cuesta",
   "cuanto vale",
+  "cuanto sale",
+  "cuanto esta",
   "cuanto tienen",
   "cuantos hay",
   "cuantas hay",
