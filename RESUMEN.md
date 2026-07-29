@@ -3,7 +3,8 @@
 > Documento de continuidad. Si estás retomando el proyecto en otra máquina
 > (o en una sesión nueva de Claude Code), **lee esto primero**.
 >
-> Última actualización: 2026-07-28
+> Última actualización: 2026-07-29 (noche — sesión cortada a mitad de
+> continuar en la otra laptop, ver §6.0.5 para retomar mañana)
 
 ---
 
@@ -220,6 +221,77 @@ etc.) y busca **una sola frase de producto por mensaje**. Pedidos
 compuestos o sin frase gatillo son justo el caso de uso para agregar IA
 (Gemini, ver §9) en vez de seguir agregando reglas ad-hoc.
 
+### 6.0.4 Ajustes de UX pedidos por el dueño tras probar en real (2026-07-29)
+
+Tras la primera prueba real por WhatsApp, se pidieron 3 cambios:
+
+1. **"Solo puedo tocar un producto por vez de la lista, quiero elegir
+   varios."** WhatsApp no tiene selección múltiple nativa en mensajes de
+   lista (limitación real de la API, no de este código). Solución: al
+   agregar un producto, se **reenvía la misma lista de la última búsqueda**
+   (`lib/whatsapp/ultimaBusqueda.ts`, cache en memoria por teléfono, 30 min)
+   para poder tocar otro producto distinto sin volver a escribir la
+   búsqueda.
+2. **"No quiero que salga mi stock disponible, y ninguna venta se debe
+   detener por falta de stock."** Se sacó el stock de la descripción de la
+   lista y de los mensajes de texto (`lib/whatsapp/respuestas.ts`,
+   `enviarListaProductos` en el webhook) — ahora solo se muestra el precio.
+   Se confirmó además que el código **nunca bloqueaba** la venta por stock
+   (ni al agregar al carrito ni al generar la cotización); el stock solo se
+   mostraba como dato informativo, así que no hizo falta tocar esa lógica,
+   solo dejar de mostrarlo.
+3. **"Quiero elegir la cantidad que yo quiera, no botones fijos +1/+5/+10."**
+   Primero se probó con botones rápidos, pero el dueño pidió cantidad
+   libre. Los botones de WhatsApp **no admiten campos de texto** (eso solo
+   existe con "WhatsApp Flows", mucho más complejo de armar) — la única
+   forma de que el cliente escriba cualquier número es preguntando por
+   texto plano. Se agregó `lib/whatsapp/estado.ts`: al tocar un producto de
+   la lista, el bot pregunta *"¿Cuántas unidades de "X" querés? Escribí el
+   número."*; el siguiente mensaje de texto de ese número se interpreta
+   como la cantidad (si no es un número válido, se lo vuelve a pedir).
+   `carrito.agregarItem()` ahora acepta la cantidad indicada (antes siempre
+   sumaba de a 1).
+
+Probado localmente end-to-end (buscar → tocar → responder "34" → se agrega
+con cantidad 34, se reenvía la lista, aparecen los botones de acción) sin
+errores de código — pendiente de reprobar en WhatsApp real desde la otra
+laptop (ver §6.0.5).
+
+### 6.0.5 ⚠️ Sesión cortada a mitad de migrar a la otra laptop (2026-07-29 noche)
+
+**Leer esto primero si estás retomando mañana.**
+
+Se hizo todo el trabajo de §6.0–6.0.4 en la laptop de ALU (usuario
+`automatizacionia69`, carpeta `C:\Users\LUILLY PONCE\proyecto\Limpiezapro`).
+Los cambios están comiteados en `main` (2 commits: uno con
+respuestas/botones/carrito/proforma, otro con la selección múltiple +
+cantidad libre + ocultar stock). **Hay que confirmar que ambos commits ya
+se subieron a GitHub con `git push` desde GitHub Desktop** — el `git push`
+por terminal fallaba por falta de credenciales interactivas.
+
+**Estado a mitad de migrar a la otra laptop (usuario `HP`,
+`C:\Users\HP\proyecto\limpiezapro`):**
+- ✅ Repo clonado, `npm install` corrido.
+- ✅ `.env.local` creado con los mismos valores (ver §3 / pedir a Claude si
+  hace falta repetirlos — no se guardan en este archivo por seguridad,
+  pero se compartieron en el chat de esa sesión).
+- ✅ `npm run dev` corriendo ahí (`Ready`, puerto 3000).
+- ⬜ **Falta instalar y configurar ngrok en esa laptop** (`npm install -g
+  ngrok`, `ngrok config add-authtoken <token>` — mismo authtoken de la
+  cuenta ngrok ya creada) y levantar el túnel (`ngrok http 3000`).
+- ⬜ **Falta reconectar el webhook en Meta** con la URL nueva de ngrok (la
+  URL cambia cada vez que se reinicia el túnel, incluso en la misma
+  laptop) — Meta → WhatsApp → Configuración de la API → Webhook → Callback
+  URL + `WHATSAPP_VERIFY_TOKEN=limpiezapro_test_token_123` → Verificar y
+  guardar → confirmar que el campo "messages" siga suscrito.
+- ⬜ **El `WHATSAPP_ACCESS_TOKEN` es temporal (~24h)** — probablemente ya
+  venció otra vez, hay que generar uno nuevo en Meta → WhatsApp →
+  Configuración de la API → Paso 1. Pruébalo, y actualizar `.env.local` en
+  la laptop que se esté usando.
+- ⬜ Falta volver a probar el flujo completo (buscar → tocar → cantidad
+  libre → finalizar) desde WhatsApp real ya en la nueva laptop, para
+  confirmar que los 3 ajustes de §6.0.4 funcionan también ahí.
+
 ## 6. Chatbot: estado y lo que falta
 
 ### 6.1 Actualización 2026-07-29 — IMPORTANTE: el ERP se mudó de repo
@@ -420,7 +492,21 @@ Tras el fix devuelve 0.
 
 ## 9. Siguiente paso sugerido
 
-1. Correr `sql/01_cerrar_fuga_vistas.sql` (§7.1) — es el único riesgo abierto.
-2. Deploy a Vercel + registrar el webhook en Meta.
-3. Responder por WhatsApp (§6.1) para cerrar la pieza 7.
-4. Recién ahí, empezar la UI del ERP (piezas 1–5), que es el grueso del MVP.
+**Mañana, retomar por acá primero (ver §6.0.5):**
+0. Confirmar que los 2 commits pendientes se subieron a GitHub (`git push`
+   vía GitHub Desktop). Terminar de configurar ngrok en la laptop nueva,
+   reconectar el webhook en Meta (URL nueva) y reprobar el flujo completo
+   de compra por WhatsApp (con cantidad libre, sin stock visible, y
+   selección múltiple reenviando la lista).
+
+Después de eso, el resto del roadmap sigue igual:
+1. Correr `sql/01_cerrar_fuga_vistas.sql` (§7.1) — es el único riesgo de
+   seguridad abierto.
+2. Deploy a Vercel + registrar el webhook en Meta con una URL fija (evita
+   tener que reconectar ngrok cada sesión).
+3. Meter IA (Gemini) para la detección de intención — resuelve el caso de
+   "pedir varios productos distintos en un mismo mensaje sin frase
+   gatillo" (ver §6.0.3).
+4. Recién ahí, empezar la UI del ERP (piezas 1–5) — aunque ojo: el ERP en
+   sí se está construyendo en el repo separado `limpiezaproERP` (§6.1), no
+   acá.
