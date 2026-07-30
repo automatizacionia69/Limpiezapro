@@ -185,6 +185,12 @@ async function procesarMensaje(
     return;
   }
 
+  // Se registra en la memoria de conversacion aunque lo haya resuelto el
+  // camino de reglas: si el proximo mensaje si requiere el respaldo de
+  // Gemini, necesita saber de que se hablo antes (ej. "tienen lejia?" ->
+  // "la de 4 litros").
+  agregarTurno(remitente, "usuario", texto);
+
   const productos = await buscarProductos(resultado.productoTexto!);
   console.log(
     `Productos encontrados para "${resultado.productoTexto}": ${productos.length}`
@@ -192,10 +198,13 @@ async function procesarMensaje(
   if (esDesarrollo) console.log(productos);
 
   if (productos.length === 0) {
-    await enviarTexto(remitente, respuestaConsultaStock(productos));
+    const respuesta = respuestaConsultaStock(productos);
+    agregarTurno(remitente, "bot", respuesta);
+    await enviarTexto(remitente, respuesta);
     return;
   }
 
+  agregarTurno(remitente, "bot", `Mostré: ${productos.map((p) => p.nombre).join(", ")}`);
   guardarUltimaBusqueda(remitente, productos);
   await enviarListaProductos(remitente, productos);
 }

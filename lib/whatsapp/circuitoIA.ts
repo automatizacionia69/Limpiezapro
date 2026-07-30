@@ -12,9 +12,17 @@ import { enviarTexto } from "./enviar";
 
 const UMBRAL_FALLOS = 3;
 const VENTANA_ABIERTO_MS = 60_000;
+/** Minimo entre avisos al dueno: una caida larga (ej. cuota diaria agotada)
+ * reabre el circuito cada VENTANA_ABIERTO_MS, pero no tiene sentido mandar
+ * un WhatsApp nuevo cada vez — con uno cada 30 min alcanza para que se
+ * entere sin inundarlo de mensajes el resto del dia. */
+const VENTANA_ENTRE_AVISOS_MS = 30 * 60_000;
+
+export type MotivoFallo = "autenticacion" | "cuota" | "otro";
 
 let fallosSeguidos = 0;
 let abiertoHasta = 0;
+let ultimoAvisoEn = 0;
 
 export function circuitoAbierto(): boolean {
   return Date.now() < abiertoHasta;
@@ -24,31 +32,39 @@ export function registrarExito(): void {
   fallosSeguidos = 0;
 }
 
-export function registrarFallo(esErrorDeAutenticacion: boolean): void {
+export function registrarFallo(motivo: MotivoFallo): void {
   fallosSeguidos += 1;
   if (fallosSeguidos < UMBRAL_FALLOS) return;
 
-  // Solo se avisa en la transicion cerrado -> abierto, no en cada falla
-  // repetida mientras el circuito sigue abierto.
-  const yaEstabaAbierto = Date.now() < abiertoHasta;
   abiertoHasta = Date.now() + VENTANA_ABIERTO_MS;
-  if (!yaEstabaAbierto) {
-    void avisarAlDueno(esErrorDeAutenticacion);
+
+  const ahora = Date.now();
+  if (ahora - ultimoAvisoEn >= VENTANA_ENTRE_AVISOS_MS) {
+    ultimoAvisoEn = ahora;
+    void avisarAlDueno(motivo);
   }
 }
 
-async function avisarAlDueno(esErrorDeAutenticacion: boolean): Promise<void> {
+async function avisarAlDueno(motivo: MotivoFallo): Promise<void> {
   const numero = process.env.WHATSAPP_ADMIN_NUMERO;
   if (!numero) return;
 
-  const mensaje = esErrorDeAutenticacion
-    ? "El asistente de IA del chatbot dejó de responder — parece que venció " +
+  const mensajes: Record<MotivoFallo, string> = {
+    autenticacion:
+      "El asistente de IA del chatbot dejó de responder — parece que venció " +
       "la clave de Gemini. Generá una nueva en Google AI Studio y actualizá " +
       "GEMINI_API_KEY. Mientras tanto el chatbot sigue funcionando con las " +
-      "reglas normales."
-    : "El asistente de IA del chatbot no está respondiendo (puede ser algo " +
+      "reglas normales.",
+    cuota:
+      "El asistente de IA del chatbot se quedó sin cuota gratuita de Gemini " +
+      "por hoy (se recupera mañana, o podés activar facturación en Google " +
+      "AI Studio para no depender del límite gratis). Mientras tanto el " +
+      "chatbot sigue funcionando con las reglas normales.",
+    otro:
+      "El asistente de IA del chatbot no está respondiendo (puede ser algo " +
       "temporal de Google). El chatbot sigue funcionando con las reglas " +
-      "normales mientras tanto.";
+      "normales mientras tanto.",
+  };
 
-  await enviarTexto(numero, mensaje);
+  await enviarTexto(numero, mensajes[motivo]);
 }

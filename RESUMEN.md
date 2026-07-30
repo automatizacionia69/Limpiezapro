@@ -3,8 +3,8 @@
 > Documento de continuidad. Si estás retomando el proyecto en otra máquina
 > (o en una sesión nueva de Claude Code), **lee esto primero**.
 >
-> Última actualización: 2026-07-29 (noche — sesión cortada a mitad de
-> continuar en la otra laptop, ver §6.0.5 para retomar mañana)
+> Última actualización: 2026-07-30 — respaldo de Gemini agregado al
+> chatbot, ver §6.0.6
 
 ---
 
@@ -291,6 +291,81 @@ por terminal fallaba por falta de credenciales interactivas.
 - ⬜ Falta volver a probar el flujo completo (buscar → tocar → cantidad
   libre → finalizar) desde WhatsApp real ya en la nueva laptop, para
   confirmar que los 3 ajustes de §6.0.4 funcionan también ahí.
+
+### 6.0.6 Gemini como respaldo híbrido cuando las reglas no entienden (2026-07-30)
+
+Se agregó Gemini como respaldo — no reemplazo — del sistema de reglas de
+`lib/whatsapp/intent.ts`. Las reglas siguen siendo el camino rápido y
+principal; Gemini solo entra cuando las reglas devuelven `desconocido` o no
+extraen producto. Decisión explícita del dueño: prioriza que el bot **nunca
+se caiga** por sobre que sea más "inteligente" — por eso el diseño híbrido,
+no un reemplazo total.
+
+Rama de trabajo: `chatbot-gemini-respaldo-ia` (generada por Ultraplan a
+partir de un plan revisado, corregida localmente — todavía sin mergear a
+`main`).
+
+**Piezas nuevas:**
+- `lib/whatsapp/gemini.ts` — cliente REST directo a Gemini (fetch, sin SDK
+  nuevo, mismo estilo que `enviar.ts`), con salida JSON estructurada
+  (`responseSchema`) para no depender de parsear texto libre. Modelo:
+  `gemini-flash-latest` (configurable con `GEMINI_MODEL`), elegido sobre
+  Gemini Pro por ser 3-5x más rápido/barato sin perder precisión para esta
+  tarea de clasificación corta.
+- `lib/whatsapp/circuitoIA.ts` — circuit breaker a nivel de módulo (un solo
+  recurso externo compartido, no por teléfono): 3 fallas seguidas abren el
+  circuito 60s sin llamar a la red. Cuando se abre, manda un aviso por
+  WhatsApp al dueño (`WHATSAPP_ADMIN_NUMERO`) distinguiendo 3 causas (clave
+  vencida/no configurada, cuota agotada, u otro problema), con un mínimo de
+  30 min entre avisos para no inundarlo si la caída dura horas.
+- `lib/whatsapp/memoriaConversacion.ts` — historial corto (8 turnos, 30 min
+  TTL) por teléfono, mismo patrón Map+TTL que `carrito.ts`, para que Gemini
+  resuelva referencias tipo "la de 4 litros" al producto mencionado antes
+  en la misma conversación. Se alimenta tanto en el camino de reglas como
+  en el de Gemini (bug encontrado y corregido: en la versión generada por
+  Ultraplan solo se alimentaba en el camino de Gemini, así que un mensaje
+  resuelto por reglas no quedaba en memoria para la siguiente pregunta).
+- `RESPUESTA_FUERA_DE_CATALOGO` en `respuestas.ts` — respuesta amable para
+  saludos/preguntas fuera del catálogo, en vez del "no entendí" seco.
+
+**Corregido tras la revisión del código generado por Ultraplan:**
+1. Bug de memoria descrito arriba.
+2. La API key de Gemini viajaba en la URL (`?key=...`); se cambió a header
+   `x-goog-api-key` para que no quede expuesta en logs de URLs.
+3. Timeout de Gemini muy corto (6s): con mensajes de 2+ productos (el caso
+   "quiero papel y también lejía") fallaba por timeout ~2 de cada 3 veces
+   en pruebas locales. Subido a 9s — confirmado 2/2 tras el cambio.
+
+**⚠️ Hallazgo importante, sin resolver — límite de cuota gratis de Gemini:**
+el plan gratuito de Google AI Studio permite **20 solicitudes por día** al
+modelo usado. Se agotó solo probando en esta sesión (confirmado con un 429
+`RESOURCE_EXHAUSTED` real de la API). Con el volumen real esperado (50+
+personas/día), si una parte relevante de los mensajes necesita el respaldo
+de IA, la cuota se agotaría a media mañana casi todos los días — el bot no
+se rompe (cae a las reglas normales, diseño funcionando como se esperaba),
+pero se pierde la parte de IA el resto del día. **Decisión pendiente del
+dueño:** activar facturación en Google AI Studio (saca el tope diario) o
+aceptar la degradación a reglas-only tras agotar la cuota. Por ahora se
+sigue con el plan gratis.
+
+**Probado localmente (POST firmado con HMAC, sin necesidad de la app real
+de WhatsApp):**
+- Mensaje que las reglas resuelven solas → sin cambios, Gemini no se llama.
+- Mensaje con typo/sin frase gatillo ("kiero esas bolsas negras grandes")
+  → Gemini lo resuelve, encuentra productos.
+- Mensaje compuesto ("quiero papel y también lejía") → Gemini separa en 2
+  items, se combinan resultados en una sola lista (21 productos entre
+  ambas familias).
+- Caída de Gemini (sin key, o cuota agotada con 429 real) → el cliente
+  igual recibe la respuesta de siempre, sin romperse.
+
+**Pendiente de probar** (bloqueado por la cuota agotada de hoy, retomar
+cuando se resetee o se active facturación):
+- Clasificación "fuera de catálogo" con el mensaje amable nuevo.
+- Resolución de referencias con memoria ("tienen lejía?" → "la de 4
+  litros") con Gemini real respondiendo (la lógica está probada por
+  revisión de código, falta la confirmación end-to-end).
+- Prueba real por WhatsApp (solo se probó simulado con HMAC hasta ahora).
 
 ## 6. Chatbot: estado y lo que falta
 

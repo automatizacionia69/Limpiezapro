@@ -1,5 +1,5 @@
 import { CANTIDAD_MAXIMA } from "./intent";
-import { circuitoAbierto, registrarExito, registrarFallo } from "./circuitoIA";
+import { circuitoAbierto, registrarExito, registrarFallo, type MotivoFallo } from "./circuitoIA";
 import type { Turno } from "./memoriaConversacion";
 
 /**
@@ -12,7 +12,10 @@ import type { Turno } from "./memoriaConversacion";
  */
 
 const GEMINI_MODEL_DEFAULT = "gemini-flash-latest";
-const TIMEOUT_MS = 6000;
+// 6000ms se quedaba corto: en pruebas locales, mensajes con 2+ productos
+// (mas "pensamiento" del modelo pese al thinkingBudget) superaban ese tope
+// en ~2 de cada 3 intentos y caian al respaldo de reglas sin necesidad.
+const TIMEOUT_MS = 9000;
 const MAX_ITEMS_IA = 5;
 /** Los modelos Gemini 3.x "piensan" antes de responder; sin tope esto puede
  * tardar 4.5s+ para una tarea de clasificacion simple. Un presupuesto chico
@@ -147,12 +150,12 @@ export async function interpretarConGemini(
   if (!apiKey) {
     // Sin key configurada: se trata igual que una clave vencida, para que
     // el aviso al dueno tambien cubra "nunca se configuro la clave".
-    registrarFallo(true);
+    registrarFallo("autenticacion");
     return null;
   }
 
   const modelo = process.env.GEMINI_MODEL || GEMINI_MODEL_DEFAULT;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -160,7 +163,7 @@ export async function interpretarConGemini(
   try {
     const respuesta = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
       signal: controller.signal,
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: PROMPT_SISTEMA }] },
@@ -175,16 +178,21 @@ export async function interpretarConGemini(
     });
 
     if (!respuesta.ok) {
-      const esAuth = respuesta.status === 401 || respuesta.status === 403;
+      const motivo: MotivoFallo =
+        respuesta.status === 401 || respuesta.status === 403
+          ? "autenticacion"
+          : respuesta.status === 429
+          ? "cuota"
+          : "otro";
       console.error(`Error de Gemini (${respuesta.status}):`, await respuesta.text());
-      registrarFallo(esAuth);
+      registrarFallo(motivo);
       return null;
     }
 
     const data = await respuesta.json();
     const textoJson = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (typeof textoJson !== "string") {
-      registrarFallo(false);
+      registrarFallo("otro");
       return null;
     }
 
@@ -192,7 +200,7 @@ export async function interpretarConGemini(
     const interpretacion = validarInterpretacion(parsed);
     if (!interpretacion) {
       console.error("Respuesta de Gemini no conforme al esquema:", textoJson);
-      registrarFallo(false);
+      registrarFallo("otro");
       return null;
     }
 
@@ -200,7 +208,7 @@ export async function interpretarConGemini(
     return interpretacion;
   } catch (error) {
     console.error("Error llamando a Gemini:", error);
-    registrarFallo(false);
+    registrarFallo("otro");
     return null;
   } finally {
     clearTimeout(timeoutId);
