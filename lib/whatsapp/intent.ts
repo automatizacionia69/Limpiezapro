@@ -21,6 +21,8 @@ const PALABRAS_CONSULTA = [
   "precio de",
   "precio",
   "tienen",
+  "tienes",
+  "tiene",
   "hay",
 ];
 
