@@ -1,5 +1,13 @@
 const GRAPH_API_VERSION = "v21.0";
 
+/**
+ * Tope por envio a la Graph API. El webhook procesa los mensajes del lote en
+ * serie dentro de un presupuesto de tiempo acotado: un envio colgado no puede
+ * quedarse esperando para siempre, porque arrastraria a todo el lote a que
+ * Meta lo reintente y el cliente reciba las respuestas duplicadas.
+ */
+const TIMEOUT_ENVIO_MS = 8000;
+
 function urlMensajes(): string | null {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   if (!phoneNumberId) {
@@ -23,6 +31,9 @@ async function enviarPayload(payload: Record<string, unknown>): Promise<boolean>
     return false;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_ENVIO_MS);
+
   try {
     const respuesta = await fetch(url, {
       method: "POST",
@@ -31,6 +42,7 @@ async function enviarPayload(payload: Record<string, unknown>): Promise<boolean>
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
 
     if (!respuesta.ok) {
@@ -43,6 +55,8 @@ async function enviarPayload(payload: Record<string, unknown>): Promise<boolean>
   } catch (error) {
     console.error("Error de red enviando WhatsApp:", error);
     return false;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

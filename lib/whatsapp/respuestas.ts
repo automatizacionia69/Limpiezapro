@@ -68,3 +68,44 @@ export function respuestaProformaGenerada(resultado: ResultadoProforma): string 
 
 export const RESPUESTA_PROFORMA_ERROR =
   "Hubo un problema generando tu cotización. Un vendedor te va a contactar para ayudarte con el pedido.";
+
+export const RESPUESTA_PROFORMA_EN_CURSO =
+  "Ya estoy generando tu cotización, esperá un momento.";
+
+export const RESPUESTA_PROFORMA_SIN_PRECIO =
+  "No pude cerrar la cotización porque alguno de los productos no tiene precio cargado. Un vendedor te va a contactar para confirmártelo.";
+
+export const RESPUESTA_PRODUCTO_NO_DISPONIBLE = "Ese producto ya no está disponible.";
+
+export const RESPUESTA_DEMASIADOS_MENSAJES =
+  "Vas muy rápido, esperá un momento y seguimos.";
+
+export const RESPUESTA_CANTIDAD_CANCELADA =
+  "Listo, no agregué nada. Decime qué producto buscás y seguimos.";
+
+/** Producto sin precio_venta: no se puede cotizar, pero la venta no se detiene — la sigue un vendedor. */
+export function respuestaSinPrecio(nombre: string): string {
+  return `El producto "${nombre}" no tiene precio cargado, así que no puedo agregarlo al pedido. Un vendedor te lo confirma y lo suma.`;
+}
+
+/** Pregunta de cantidad. Si el cliente ya mencionó un número antes, se lo recuerda. */
+export function preguntaCantidad(nombre: string, sugerida: number | null): string {
+  const base = `¿Cuántas unidades de "${nombre}" querés? Escribí el número.`;
+  if (sugerida === null) return base;
+  return `${base}\nAntes mencionaste ${sugerida}: escribí ${sugerida} si es esa cantidad.`;
+}
+
+export function respuestaCantidadInvalida(maximo: number): string {
+  return `Esa cantidad no me sirve. Escribime un número entre 1 y ${maximo}, por ejemplo: 3. Si preferís, escribí "cancelar".`;
+}
+
+export function respuestaTopeCantidad(
+  nombre: string,
+  acumulado: number,
+  maximo: number
+): string {
+  return (
+    `No puedo sumar más de ${maximo} unidades de "${nombre}" en un pedido ` +
+    `(ya tenés ${acumulado}). Para una cantidad mayor te ayuda un vendedor.`
+  );
+}

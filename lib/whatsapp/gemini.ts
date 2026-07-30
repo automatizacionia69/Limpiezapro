@@ -12,10 +12,16 @@ import type { Turno } from "./memoriaConversacion";
  */
 
 const GEMINI_MODEL_DEFAULT = "gemini-flash-latest";
-// 6000ms se quedaba corto: en pruebas locales, mensajes con 2+ productos
-// (mas "pensamiento" del modelo pese al thinkingBudget) superaban ese tope
-// en ~2 de cada 3 intentos y caian al respaldo de reglas sin necesidad.
-const TIMEOUT_MS = 9000;
+/**
+ * Historia de este numero: 6000ms se quedaba corto para mensajes con 2+
+ * productos y se subio a 9000ms. Pero 9s no cabe en el presupuesto del
+ * webhook: los mensajes del lote se procesan en serie y, al pasarse del tope
+ * de la funcion, Meta considera fallida la entrega, reintenta, y el cliente
+ * recibe TODO duplicado. Entre "IA mas certera" y "el cliente no recibe
+ * mensajes duplicados" gana lo segundo: 3500ms, y lo que no llegue a tiempo
+ * cae al camino de reglas, que es lo que el diseño hibrido ya esperaba.
+ */
+const TIMEOUT_MS = 3500;
 const MAX_ITEMS_IA = 5;
 /** Los modelos Gemini 3.x "piensan" antes de responder; sin tope esto puede
  * tardar 4.5s+ para una tarea de clasificacion simple. Un presupuesto chico
@@ -150,7 +156,7 @@ export async function interpretarConGemini(
   if (!apiKey) {
     // Sin key configurada: se trata igual que una clave vencida, para que
     // el aviso al dueno tambien cubra "nunca se configuro la clave".
-    registrarFallo("autenticacion");
+    await registrarFallo("autenticacion");
     return null;
   }
 
@@ -159,6 +165,7 @@ export async function interpretarConGemini(
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const inicio = Date.now();
 
   try {
     const respuesta = await fetch(url, {
@@ -185,14 +192,14 @@ export async function interpretarConGemini(
           ? "cuota"
           : "otro";
       console.error(`Error de Gemini (${respuesta.status}):`, await respuesta.text());
-      registrarFallo(motivo);
+      await registrarFallo(motivo);
       return null;
     }
 
     const data = await respuesta.json();
     const textoJson = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (typeof textoJson !== "string") {
-      registrarFallo("otro");
+      await registrarFallo("otro");
       return null;
     }
 
@@ -200,15 +207,19 @@ export async function interpretarConGemini(
     const interpretacion = validarInterpretacion(parsed);
     if (!interpretacion) {
       console.error("Respuesta de Gemini no conforme al esquema:", textoJson);
-      registrarFallo("otro");
+      await registrarFallo("otro");
       return null;
     }
 
-    registrarExito();
+    // La duracion importa: una respuesta lenta pero exitosa igual consume el
+    // presupuesto del webhook, asi que una racha de lentas abre el circuito.
+    const duracion = Date.now() - inicio;
+    console.log(`[Gemini] Respuesta interpretada en ${duracion}ms.`);
+    registrarExito(duracion);
     return interpretacion;
   } catch (error) {
     console.error("Error llamando a Gemini:", error);
-    registrarFallo("otro");
+    await registrarFallo("otro");
     return null;
   } finally {
     clearTimeout(timeoutId);

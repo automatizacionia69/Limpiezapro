@@ -45,3 +45,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Copia duplicada del propio repo, creada por error al migrar de laptop.
+# Se puede borrar sin perder nada (esta todo en el historial de git).
+/Limpiezapro/
