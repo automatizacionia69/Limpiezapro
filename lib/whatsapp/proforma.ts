@@ -1,15 +1,8 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { ItemCarrito } from "./carrito";
-import { mismoTelefono, normalizarTelefono } from "./telefono";
 
 /** Misma tasa que usa el ERP (src/lib/cotizaciones.ts: IGV_TASA). */
 const IGV_TASA = 0.18;
-
-/**
- * Tope de clientes a traer para comparar telefonos en memoria. La cartera real
- * es de decenas/cientos de clientes, asi que entra sin problema.
- */
-const MAX_CLIENTES = 5000;
 
 export interface ResultadoProforma {
   numero: string;
@@ -25,63 +18,38 @@ export type ResultadoGenerarProforma =
   | { ok: false; motivo: "sin_items" }
   | { ok: false; motivo: "error" };
 
-interface FilaCliente {
-  id: number;
-  telefono: string | null;
-}
-
 /**
- * Busca el cliente por telefono y lo crea si no existe.
+ * Busca el cliente por telefono y lo crea si no existe, en un solo paso
+ * atomico del lado de la base (RPC obtener_o_crear_cliente_por_telefono,
+ * ver add-dedupe-clientes-telefono.sql en el repo del ERP).
  *
- * El telefono llega de WhatsApp como "51987654321", pero en el ERP se escribe
- * a mano en texto libre ("987 654 321", "+51 987-654-321"): un `.eq()` exacto
- * NUNCA matchea y se creaba un cliente duplicado "Cliente WhatsApp 51..." por
- * cada cotizacion. Por eso se traen los candidatos y se comparan normalizados
- * en memoria.
- *
- * PENDIENTE del lado de la base de datos (no se puede resolver desde aca):
- * falta una columna normalizada de telefono (solo digitos, sin prefijo de pais)
- * con INDICE UNICO, para poder buscar con un `.eq()` indexado y que la base
- * misma impida el duplicado en vez de depender de este chequeo.
+ * Antes esto traia hasta 5000 clientes y comparaba telefonos normalizados en
+ * memoria: funcionaba, pero dos mensajes casi simultaneos del mismo cliente
+ * (dos instancias serverless de Vercel, que no comparten memoria) podian no
+ * verse entre si y crear un cliente Y una cotizacion duplicados. La columna
+ * `clientes.telefono_normalizado` ahora tiene un INDICE UNICO, y la funcion
+ * hace INSERT ... ON CONFLICT ... RETURNING en una sola sentencia: la base
+ * misma impide el duplicado, sin ventana de carrera. Tampoco pisa el nombre
+ * de un cliente que ya existia (si un admin lo corrigio a mano en el ERP, no
+ * se sobreescribe con el nombre de perfil de WhatsApp del siguiente mensaje).
  */
 async function obtenerOCrearCliente(
   telefono: string,
   nombrePerfil: string | null
 ): Promise<number | null> {
-  const canonico = normalizarTelefono(telefono);
-
-  const { data: clientes, error: errorBusqueda } = await supabaseAdmin
-    .from("clientes")
-    .select("id, telefono")
-    .not("telefono", "is", null)
-    .limit(MAX_CLIENTES);
-
-  if (errorBusqueda) {
-    console.error("Error buscando cliente por telefono:", errorBusqueda);
-    return null;
-  }
-
-  if (canonico.length > 0) {
-    const existente = ((clientes ?? []) as FilaCliente[]).find((cliente) =>
-      mismoTelefono(cliente.telefono, telefono)
-    );
-    if (existente) return existente.id;
-  }
-
   const nombre = nombrePerfil?.trim() || `Cliente WhatsApp ${telefono}`;
 
-  const { data: creado, error: errorCrear } = await supabaseAdmin
-    .from("clientes")
-    .insert({ nombre, telefono })
-    .select("id")
-    .single();
+  const { data, error } = await supabaseAdmin.rpc(
+    "obtener_o_crear_cliente_por_telefono",
+    { p_telefono: telefono, p_nombre: nombre }
+  );
 
-  if (errorCrear || !creado) {
-    console.error("Error creando cliente:", errorCrear);
+  if (error || typeof data !== "number") {
+    console.error("Error obteniendo/creando cliente:", error);
     return null;
   }
 
-  return creado.id;
+  return data;
 }
 
 /**
@@ -90,9 +58,11 @@ async function obtenerOCrearCliente(
  * (COT-00001...) lo genera la base de datos.
  *
  * Nota: son dos inserts secuenciales via REST, sin transaccion. Si el
- * segundo falla, la cabecera de la cotizacion queda creada pero sin items
- * (se loggea el error para revision manual). Mismo patron que usa el resto
- * del proyecto — no hay RPC/transaccion multi-tabla todavia.
+ * segundo falla, se compensa borrando la cabecera recien creada (para no
+ * dejar una cotizacion fantasma con importes pero sin items) — si ademas
+ * ese borrado fallara, recien ahi se loggea para revision manual. Mismo
+ * patron que usa el resto del proyecto — no hay RPC/transaccion multi-tabla
+ * todavia.
  */
 export async function generarProforma(
   telefono: string,
@@ -159,6 +129,22 @@ export async function generarProforma(
       `Error creando detalle_cotizacion para cotizacion ${cotizacion.numero}:`,
       errorDetalle
     );
+
+    // Se compensa el insert de la cabecera para no dejar una cotizacion
+    // fantasma (con importes pero sin ninguna linea) visible en el ERP.
+    const { error: errorBorrado } = await supabaseAdmin
+      .from("cotizaciones")
+      .delete()
+      .eq("id", cotizacion.id);
+
+    if (errorBorrado) {
+      console.error(
+        `No se pudo revertir la cotizacion huerfana ${cotizacion.numero} ` +
+          `(id ${cotizacion.id}) tras fallar su detalle — requiere revision manual:`,
+        errorBorrado
+      );
+    }
+
     return { ok: false, motivo: "error" };
   }
 

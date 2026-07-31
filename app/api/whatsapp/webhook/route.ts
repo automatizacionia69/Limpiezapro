@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { detectarIntencion, CANTIDAD_MAXIMA } from "@/lib/whatsapp/intent";
 import {
@@ -78,8 +79,24 @@ const PRESUPUESTO_LOTE_MS = 45_000;
 /** Tiempo minimo que tiene que quedar del lote para animarse a llamar a Gemini. */
 const MINIMO_PARA_GEMINI_MS = 8_000;
 
-/** Tope de mensajes procesados por llamada al webhook: Meta puede agrupar varios. */
-const MAX_MENSAJES_POR_LOTE = 20;
+/**
+ * Por encima de este consumo del presupuesto del lote, no se arrancan mensajes
+ * NUEVOS (el que ya esta en curso termina igual). Protege contra que Vercel mate
+ * la funcion a mitad de un envio a WhatsApp en un lote grande o lento: los
+ * mensajes que no llegan a intentarse quedan intocados (nunca se reservan en
+ * dedupe.ts), listos para la proxima entrega del webhook.
+ */
+const UMBRAL_CORTE_LOTE_MS = PRESUPUESTO_LOTE_MS * 0.8;
+
+/**
+ * Tope de mensajes procesados por llamada al webhook: Meta puede agrupar
+ * varios. Es una cota de seguridad (memoria/iteraciones), no lo que evita
+ * pasarse de maxDuration — eso lo hace UMBRAL_CORTE_LOTE_MS de arriba. Por eso
+ * puede ser generoso: cada mensaje sigue gateado por su propio presupuesto de
+ * tiempo, y superarlo de verdad requeriria que Meta agrupara mensajes de mas
+ * de 100 conversaciones distintas en una unica entrega.
+ */
+const MAX_MENSAJES_POR_LOTE = 100;
 
 /** Tipos de mensaje a los que no tiene sentido responder (reacciones a mensajes previos). */
 const TIPOS_SIN_RESPUESTA = new Set(["reaction"]);
@@ -105,10 +122,18 @@ interface CuerpoWebhook {
   entry?: { changes?: { value?: ValueWebhook }[] }[];
 }
 
-/** Enmascara un numero para logs: 51987654321 -> 519****4321 */
+/** Enmascara un numero para logs: 51987654321 -> ***321 (largo fijo, no proporcional al del numero real). */
 function enmascarar(numero: string): string {
-  if (numero.length <= 7) return "****";
-  return `${numero.slice(0, 3)}****${numero.slice(-4)}`;
+  if (numero.length <= 3) return "***";
+  return `***${numero.slice(-3)}`;
+}
+
+/** Compara el verify token con tiempo constante, mismo cuidado que firma.ts con el HMAC del POST. */
+function tokenEsValido(recibido: string, esperado: string): boolean {
+  const bufRecibido = Buffer.from(recibido);
+  const bufEsperado = Buffer.from(esperado);
+  if (bufRecibido.length !== bufEsperado.length) return false;
+  return crypto.timingSafeEqual(bufRecibido, bufEsperado);
 }
 
 export async function GET(request: NextRequest) {
@@ -116,8 +141,9 @@ export async function GET(request: NextRequest) {
   const mode = searchParams.get("hub.mode");
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
+  const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN;
 
-  if (mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+  if (mode === "subscribe" && token !== null && verifyToken && tokenEsValido(token, verifyToken)) {
     return new NextResponse(challenge, { status: 200 });
   }
 
@@ -170,7 +196,7 @@ export async function POST(request: NextRequest) {
     mensaje: Record<string, unknown>;
     contactos: ContactoWebhook[];
   }[] = [];
-  let descartados = 0;
+  const descartadosPorTope: string[] = [];
 
   for (const entrada of body?.entry ?? []) {
     for (const cambio of entrada?.changes ?? []) {
@@ -184,7 +210,7 @@ export async function POST(request: NextRequest) {
 
       for (const mensaje of mensajes) {
         if (pendientes.length >= MAX_MENSAJES_POR_LOTE) {
-          descartados += 1;
+          descartadosPorTope.push(enmascarar(String(mensaje.from ?? "")));
           continue;
         }
         pendientes.push({ mensaje, contactos });
@@ -192,14 +218,27 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  if (descartados > 0) {
+  if (descartadosPorTope.length > 0) {
     console.error(
-      `Webhook: ${descartados} mensaje(s) descartados por el tope de ` +
-        `${MAX_MENSAJES_POR_LOTE} por llamada — esos clientes no reciben respuesta.`
+      `Webhook: ${descartadosPorTope.length} mensaje(s) descartados por el ` +
+        `tope de ${MAX_MENSAJES_POR_LOTE} por llamada — esos clientes no ` +
+        `reciben respuesta: ${descartadosPorTope.join(", ")}`
     );
   }
 
-  for (const { mensaje, contactos } of pendientes) {
+  for (let i = 0; i < pendientes.length; i++) {
+    const transcurrido = Date.now() - inicioLote;
+    if (transcurrido > UMBRAL_CORTE_LOTE_MS) {
+      console.error(
+        `Webhook: presupuesto de tiempo consumido (${transcurrido}ms) con ` +
+          `${pendientes.length - i} mensaje(s) sin intentar — se corta el ` +
+          `lote aca para no arriesgar que Vercel mate la funcion a mitad de ` +
+          `un envio.`
+      );
+      break;
+    }
+
+    const { mensaje, contactos } = pendientes[i];
     const id = typeof mensaje.id === "string" ? mensaje.id : null;
 
     // El id se reserva antes de procesar (para que un reintento simultaneo no
@@ -552,7 +591,7 @@ async function procesarInteractivo(
     const id = listReply?.id;
     if (typeof id === "string" && id.startsWith("add_")) {
       const productoId = Number(id.slice("add_".length));
-      if (Number.isFinite(productoId)) {
+      if (Number.isInteger(productoId) && productoId > 0) {
         return pedirCantidad(remitente, productoId);
       }
     }
