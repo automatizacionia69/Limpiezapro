@@ -14,14 +14,19 @@ import type { Turno } from "./memoriaConversacion";
 const GEMINI_MODEL_DEFAULT = "gemini-flash-latest";
 /**
  * Historia de este numero: 6000ms se quedaba corto para mensajes con 2+
- * productos y se subio a 9000ms. Pero 9s no cabe en el presupuesto del
- * webhook: los mensajes del lote se procesan en serie y, al pasarse del tope
- * de la funcion, Meta considera fallida la entrega, reintenta, y el cliente
- * recibe TODO duplicado. Entre "IA mas certera" y "el cliente no recibe
- * mensajes duplicados" gana lo segundo: 3500ms, y lo que no llegue a tiempo
- * cae al camino de reglas, que es lo que el diseño hibrido ya esperaba.
+ * productos y se subio a 9000ms. Pero 9s no cabia en el presupuesto del
+ * webhook de ese momento (limite por defecto de Vercel, 10s) y se bajo a
+ * 3500ms. Desde que route.ts fijo maxDuration=60 y reserva explicitamente
+ * MINIMO_PARA_GEMINI_MS=8000ms de presupuesto antes de siquiera intentar
+ * llamar a Gemini, ese margen de 8s ya esta contemplado y protegido por
+ * UMBRAL_CORTE_LOTE_MS — asi que 3500ms quedaba dejando sin usar ~4.5s de
+ * presupuesto que ya estaban reservados. 7000ms deja 1s de margen bajo esa
+ * reserva y le da lugar a los mensajes de 2+ productos (el caso que en la
+ * practica mas necesita el tiempo extra) sin arriesgar el limite real de
+ * la funcion. Lo que no llegue a tiempo sigue cayendo al camino de reglas,
+ * que es lo que el diseño hibrido ya esperaba.
  */
-const TIMEOUT_MS = 3500;
+const TIMEOUT_MS = 7000;
 const MAX_ITEMS_IA = 5;
 /** Los modelos Gemini 3.x "piensan" antes de responder; sin tope esto puede
  * tardar 4.5s+ para una tarea de clasificacion simple. Un presupuesto chico
@@ -70,10 +75,14 @@ Reglas:
   (ej. "la de 4 litros" despues de haber hablado de lejia), usa el
   historial para resolver a que producto se refiere y arma el
   textoBusqueda completo (ej. "lejia 4 litros").
-- Si el mensaje es un saludo, una pregunta fuera del catalogo de limpieza
-  (horarios, ubicacion, formas de pago, etc.) o cualquier cosa que no sea
-  buscar/pedir un producto, clasificalo como intent "fuera_de_catalogo" con
-  items vacio.
+- "fuera_de_catalogo" es SOLO para mensajes que claramente no son un pedido
+  de producto: saludos, preguntas de horarios/ubicacion/formas de pago,
+  quejas, charla sin nada que buscar. Si el cliente dice algo con forma de
+  "quiero/necesito/busco/tienen <X>", es intent "consultar_stock" o
+  "armar_pedido" con ese <X> como textoBusqueda — SIEMPRE, aunque el
+  nombre te suene raro o no te parezca un articulo de limpieza. Vos no
+  decidis si existe en el catalogo: eso lo verifica despues la base de
+  datos real: tu trabajo es solo extraer que es lo que esta pidiendo.
 - Si de verdad no se entiende nada, usa intent "desconocido" con items
   vacio.
 - Si se entiende que busca/pide producto(s), usa intent "consultar_stock" o
