@@ -367,6 +367,60 @@ cuando se resetee o se active facturación):
   revisión de código, falta la confirmación end-to-end).
 - Prueba real por WhatsApp (solo se probó simulado con HMAC hasta ahora).
 
+### 6.0.7 Primera prueba real de punta a punta por WhatsApp (2026-07-31)
+
+Primera vez que se probó el flujo completo con tráfico **100% real** (no
+simulado con HMAC): ngrok reconectado con URL nueva, webhook re-verificado
+en Meta, token de acceso renovado dos veces durante la sesión (vencen
+~24h, es normal). Se armó un pedido real de punta a punta — búsqueda,
+carrito, "Finalizar pedido" — y en el camino aparecieron 3 bugs reales que
+ninguna prueba simulada había encontrado, los 3 corregidos y confirmados
+en vivo antes de terminar la sesión:
+
+1. **Timeout de Gemini demasiado corto para mensajes de 2+ productos.**
+   `TIMEOUT_MS` en `gemini.ts` estaba en 3500ms — un valor heredado de
+   cuando el límite de la función era el default de Vercel (10s). Desde
+   que `route.ts` fijó `maxDuration=60` y ya reserva 8000ms de
+   presupuesto antes de llamar a Gemini (`MINIMO_PARA_GEMINI_MS`), ese
+   margen quedó sin aprovechar. "Quiero bolsas y lejia" (2 productos)
+   tardaba más de 3500ms y Gemini se abortaba, cayendo al mensaje
+   genérico de "no entendí". Subido a 7000ms — confirmado con el mismo
+   mensaje real, encontró 17 productos.
+2. **El prompt de Gemini juzgaba de más si un producto "sonaba" a
+   artículo de limpieza.** La instrucción original le decía que
+   clasifique como `fuera_de_catalogo` "cualquier cosa que no sea
+   buscar/pedir un producto" — pero Gemini no tiene ni debe tener acceso
+   al catálogo real (por diseño), así que terminaba decidiendo por su
+   propio criterio general si un nombre le sonaba plausible. Con
+   "chizito" (que **sí es** un producto real del catálogo) lo clasificó
+   como fuera de catálogo porque a la IA le sonaba a snack, no a
+   artículo de limpieza. Corregido: el prompt ahora es explícito en que
+   cualquier "quiero/necesito/busco/tienen X" es siempre una búsqueda de
+   producto sin importar si el nombre le suena conocido — la existencia
+   real la decide después `buscarProductos()` contra Supabase, nunca la
+   IA. Confirmado: "quiero chizito" ahora sí encuentra el producto real.
+3. **`obtener_o_crear_cliente_por_telefono()` fallaba con 42P10 en el
+   segundo mensaje de cualquier cliente.** El índice único de
+   `telefono_normalizado` (ver §6.1 en el repo del ERP) es **parcial**
+   (`where telefono_normalizado is not null`). Sin repetir esa misma
+   condición en el `ON CONFLICT` de la función, Postgres no lo reconocía
+   como destino válido de conflicto — "Finalizar pedido" fallaba con
+   "Hubo un problema generando tu cotización" apenas un cliente volvía a
+   escribir. Corregido agregando `where telefono_normalizado is not
+   null` también al `ON CONFLICT`. Verificado con dos llamadas seguidas
+   a la función: la segunda devuelve el mismo id, sin duplicar ni pisar
+   el nombre.
+
+**Confirmado funcionando de punta a punta con WhatsApp real:** búsqueda
+por reglas, respaldo de Gemini (mensaje simple y compuesto), armar
+carrito, "Finalizar pedido" → cotización real creada en el ERP.
+
+**Nota operativa encontrada en el camino:** el botón "Verificar y
+guardar" del webhook en Meta queda deshabilitado si los campos no se
+"tocan" en esa sesión del navegador (aunque tengan el valor correcto
+pre-cargado) — hay que borrar y volver a escribir el valor en ambos
+campos para que Meta detecte el cambio y habilite el botón.
+
 ## 6. Chatbot: estado y lo que falta
 
 ### 6.1 Actualización 2026-07-29 — IMPORTANTE: el ERP se mudó de repo
