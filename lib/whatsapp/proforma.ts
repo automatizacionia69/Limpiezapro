@@ -148,5 +148,20 @@ export async function generarProforma(
     return { ok: false, motivo: "error" };
   }
 
+  // Notifica a la campana del ERP (tabla "notificaciones", ver
+  // add-notificaciones.sql en el repo limpiezaproERP). No bloquea el
+  // pedido si falla: la cotizacion ya existe y es lo que le importa al
+  // cliente — la notificacion es un aviso secundario para el equipo.
+  const { error: errorNotificacion } = await supabaseAdmin
+    .from("notificaciones")
+    .insert({ cotizacion_id: cotizacion.id });
+
+  if (errorNotificacion) {
+    console.error(
+      `No se pudo crear la notificacion para ${cotizacion.numero}:`,
+      errorNotificacion
+    );
+  }
+
   return { ok: true, proforma: { numero: cotizacion.numero, subtotal, igv, total } };
 }
